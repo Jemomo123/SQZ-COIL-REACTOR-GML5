@@ -1,0 +1,4 @@
+pandas==2.2.2
+numpy==1.26.4
+ccxt==4.2.25
+python-dotenv==1.0.1
