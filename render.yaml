@@ -2,6 +2,7 @@ services:
   - type: web
     name: sqz-scanner-api
     env: python
+    plan: free # Or starter, etc.
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     envVars:
@@ -9,7 +10,7 @@ services:
         value: 8080
 
 crons:
-  - name: sqz-daily-scan
+  - name: sqz-scheduled-scan
     schedule: "0 */4 * * *" # Run every 4 hours
-    command: "curl http://sqz-scanner-api-on-render.com/cron"
+    command: "curl https://your-app-name.onrender.com/cron"
     service: sqz-scanner-api
