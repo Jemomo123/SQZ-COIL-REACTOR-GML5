@@ -1,16 +1,12 @@
 services:
   - type: web
-    name: sqz-scanner-api
+    name: gml5
     env: python
-    plan: free # Or starter, etc.
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
-    envVars:
-      - key: PORT
-        value: 8080
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app
 
 crons:
-  - name: sqz-scheduled-scan
-    schedule: "0 */4 * * *" # Run every 4 hours
-    command: "curl https://your-app-name.onrender.com/cron"
-    service: sqz-scanner-api
+  - name: keep-engine-alive
+    schedule: "*/5 * * * *" # Runs every 5 minutes
+    command: curl https://gml5.onrender.com/api/data
+    service: gml5
