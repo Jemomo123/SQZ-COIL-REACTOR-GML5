@@ -1,6 +1,5 @@
-fastapi
-uvicorn
+flask
+gunicorn
 ccxt
 pandas
 numpy
-pydantic
