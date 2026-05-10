@@ -25,22 +25,38 @@ EXCHANGE_LIST = [
 def fetch_data_failover(symbol):
     """
     Tries exchanges in order until one succeeds.
+    FAST FAIL: Skips exchanges if the market doesn't exist.
     """
+    pair = symbol + '/USDT'
+    
     for ex in EXCHANGE_LIST:
         try:
-            ex.load_markets()
+            # Load markets only once per exchange if possible
+            if not ex.markets:
+                try:
+                    ex.load_markets()
+                except Exception as e:
+                    print(f"Market load fail {ex.name}: {e}")
+                    continue
+
+            # CRITICAL FIX: Check if pair exists BEFORE fetching to prevent freeze
+            if pair not in ex.markets:
+                continue 
+
             # Fetch required timeframes
             dfs = {}
             for tf in ['3m', '5m', '15m']:
-                bars = ex.fetch_ohlcv(symbol + '/USDT', tf, limit=200)
-                import pandas as pd
+                # Set a small timeout to prevent hanging
+                bars = ex.fetch_ohlcv(pair, tf, limit=200, params={'timeout': 5000}) 
                 df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 dfs[tf] = df
             return dfs, ex.name
         except Exception as e:
-            print(f"Exchange Failover: {ex.name} failed.")
+            # Log error but continue to next exchange
+            print(f"Fetch fail {ex.name} for {symbol}: {e}")
             continue
+            
     return None, "OFFLINE"
 
 def run_engine():
@@ -53,7 +69,6 @@ def run_engine():
     if cache['data'] and (now - cache['timestamp']) < CACHE_TTL:
         return cache['data']
 
-    # UPDATED LIST: Added SPX, SPACE, ZEC, LINEA
     targets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PEPE", "SPX", "SPACE", "ZEC", "LINEA"]
     
     results = []
