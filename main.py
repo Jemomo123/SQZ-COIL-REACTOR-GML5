@@ -53,7 +53,9 @@ def run_engine():
     if cache['data'] and (now - cache['timestamp']) < CACHE_TTL:
         return cache['data']
 
-    targets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PEPE"]
+    # UPDATED LIST: Added SPX, SPACE, ZEC, LINEA
+    targets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PEPE", "SPX", "SPACE", "ZEC", "LINEA"]
+    
     results = []
     active_exchange = "OFFLINE"
     scan_time = 0
@@ -84,7 +86,7 @@ def run_engine():
                         "sma_respect": d['sma_status'],
                         "whipsaw": "YES" if "WHIPSAW" in d['sma_status'] else "NO",
                         "timeframe": "15m",
-                        "age": "0s", # Simplified for instant scan
+                        "age": "0s",
                         "exchange": active_exchange
                     })
         except Exception as e:
@@ -129,6 +131,8 @@ DASHBOARD_HTML = """
         
         .blink { animation: blinker 1s linear infinite; }
         @keyframes blinker { 50% { opacity: 0; } }
+        
+        .empty-msg { text-align: center; color: #444; margin-top: 20px; font-size: 0.8rem; }
     </style>
 </head>
 <body>
@@ -153,11 +157,20 @@ DASHBOARD_HTML = """
                 `EXCHANGE: ${data.exchange} | LATENCY: ${data.scan_time} | REFRESH: 5s`;
 
             const grid = document.getElementById('grid');
+            
+            // Filter: Only show ACTIVE or WAIT. Hide INVALID.
+            const activeSignals = data.signals.filter(s => s.validity !== 'INVALID');
+
+            if (activeSignals.length === 0) {
+                grid.innerHTML = `<div class="empty-msg">NO ACTIVE STRUCTURES DETECTED</div>`;
+                return;
+            }
+
             let html = `<table><thead><tr>
                 <th>SYM</th><th>DIR</th><th>SQZ TYPE</th><th>VALID</th><th>CROSS</th><th>EXP</th><th>RESPECT</th>
             </tr></thead><tbody>`;
 
-            data.signals.forEach(s => {
+            activeSignals.forEach(s => {
                 let validClass = s.validity.toLowerCase();
                 let dirClass = s.direction.toLowerCase();
                 
