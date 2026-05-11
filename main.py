@@ -3,6 +3,7 @@ import time
 import ccxt
 import threading
 import socket
+import pandas as pd  # CRITICAL FIX: Was missing, causing crash
 from flask import Flask, jsonify
 from engine import JeremiahEngine
 
@@ -49,7 +50,7 @@ def fetch_data_failover(symbol):
 
 def scanner_loop():
     """
-    Runs continuously in the background (Same process as Web Server now).
+    Runs continuously in background.
     """
     targets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PEPE", "SPX", "SPACE", "ZEC", "LINEA"]
     
@@ -57,7 +58,6 @@ def scanner_loop():
         start_time = time.time()
         results = []
         active_ex = "OFFLINE"
-        scan_ok = False
         
         for sym in targets:
             try:
@@ -101,15 +101,22 @@ def scanner_loop():
             "latency": f"{scan_time}s"
         }
         call_log.insert(0, log_entry)
-        if len(call_log) > 20: call_log.pop() # Keep last 20 logs
+        if len(call_log) > 20: call_log.pop()
         
         time.sleep(6)
 
-# --- START THREAD ---
-# With --workers 1 in Procfile, this thread is guaranteed to run.
-t = threading.Thread(target=scanner_loop, daemon=True)
-t.start()
-print("Scanner Thread Started on Single Worker")
+# --- GLOBAL THREAD OBJECT ---
+t = None
+
+def start_thread():
+    global t
+    if t is None or not t.is_alive():
+        t = threading.Thread(target=scanner_loop, daemon=True)
+        t.start()
+        print("Scanner Thread Started")
+
+# Start thread on import
+start_thread()
 
 # --- HTML DASHBOARD ---
 DASHBOARD_HTML = """
@@ -125,12 +132,10 @@ DASHBOARD_HTML = """
         .title { font-size: 1.2rem; font-weight: bold; letter-spacing: 2px; }
         .stats { font-size: 0.7rem; color: #888; margin-top: 5px; }
         
-        /* Main Table */
         table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.7rem; }
         th { text-align: left; border-bottom: 1px solid #333; padding: 5px; color: #00ff00; }
         td { padding: 5px; border-bottom: 1px solid #111; }
         
-        /* Log Section */
         .log-section { margin-top: 20px; border-top: 1px dashed #333; padding-top: 10px; }
         .log-title { color: #666; font-size: 0.6rem; margin-bottom: 5px; }
         .log-table { width: 100%; font-size: 0.6rem; color: #666; }
@@ -159,9 +164,7 @@ DASHBOARD_HTML = """
                     <th>TIME</th><th>STATUS</th><th>SIGS</th><th>TOP COIN</th><th>LATENCY</th>
                 </tr>
             </thead>
-            <tbody id="log-body">
-                <!-- Logs go here -->
-            </tbody>
+            <tbody id="log-body"></tbody>
         </table>
     </div>
 
@@ -177,11 +180,9 @@ DASHBOARD_HTML = """
         }
 
         function render(data) {
-            // Update Header
             document.getElementById('status').innerHTML = 
                 `EXCHANGE: ${data.exchange} | LATENCY: ${data.scan_time} | ${data.timestamp}`;
 
-            // Update Main Table
             const grid = document.getElementById('grid');
             if (data.signals.length === 0) {
                 grid.innerHTML = `<div style="text-align:center; color:#444; padding:20px;">NO ACTIVE STRUCTURES DETECTED</div>`;
@@ -206,7 +207,6 @@ DASHBOARD_HTML = """
                 grid.innerHTML = html;
             }
 
-            // Update Logs
             const logBody = document.getElementById('log-body');
             let logHtml = "";
             data.log.forEach(l => {
@@ -235,7 +235,9 @@ def home():
 
 @app.route("/api/data")
 def api():
-    # Return combined data
+    # Watchdog: Restart thread if it died
+    if t is None or not t.is_alive():
+        start_thread()
     return jsonify({
         "signals": current_data['signals'],
         "exchange": current_data['exchange'],
