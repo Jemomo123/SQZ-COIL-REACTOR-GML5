@@ -8,118 +8,102 @@ from engine import JeremiahEngine
 app = Flask(__name__)
 engine = JeremiahEngine()
 
-# Cache to prevent API hammering
-CACHE_TTL = 5
-cache = {'data': None, 'timestamp': 0}
+# --- SHARED CACHE ---
+current_data = {
+    "signals": [],
+    "exchange": "STARTING...",
+    "scan_time": "0s",
+    "timestamp": "00:00:00",
+    "status": "INITIALIZING"
+}
 
-# Reduced to Top 5 Stable Exchanges to prevent hanging
-# Removed weex/bingx as they often cause socket hangs
+# --- EXCHANGE CONFIG (UPDATED) ---
+# Removed Bybit per request. Kept OKX and MEXC for best free data.
 EXCHANGE_CONFIG = [
-    ccxt.binance({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
-    ccxt.bybit({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
-    ccxt.okx({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
-    ccxt.mexc({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
-    ccxt.gate({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
+    ccxt.binance({'options': {'defaultType': 'spot'}, 'timeout': 3000}),
+    ccxt.gate({'options': {'defaultType': 'spot'}, 'timeout': 3000}),
+    ccxt.okx({'options': {'defaultType': 'spot'}, 'timeout': 3000}),
+    ccxt.mexc({'options': {'defaultType': 'spot'}, 'timeout': 3000})
 ]
 
 def fetch_data_failover(symbol):
     """
-    Tries exchanges in order until one succeeds.
-    Uses aggressive timeouts (2s) to prevent hanging.
+    Tries exchanges. Returns data or None.
     """
     pair = symbol + '/USDT'
     
     for ex in EXCHANGE_CONFIG:
         try:
-            # Load markets (with aggressive error handling)
-            if not ex.markets:
-                try:
-                    ex.load_markets()
-                except Exception as e:
-                    print(f"Market load fail {ex.name}: {e}")
-                    continue
+            if not ex.markets: ex.load_markets()
+            if pair not in ex.markets: continue 
 
-            # CRITICAL: Skip immediately if pair doesn't exist
-            if pair not in ex.markets:
-                continue 
-
-            # Fetch required timeframes
             dfs = {}
+            # Fetch required timeframes
             for tf in ['3m', '5m', '15m']:
-                # Timeout is handled by the exchange config above (2000ms)
                 bars = ex.fetch_ohlcv(pair, tf, limit=200)
                 df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 dfs[tf] = df
             return dfs, ex.name
         except Exception as e:
-            # Log but continue
-            print(f"Fetch fail {ex.name} for {symbol}: {type(e).__name__}")
             continue
-            
-    return None, "OFFLINE"
+    return None, "FAIL"
 
-def run_engine():
+def scanner_loop():
     """
-    Core scanning loop.
+    Runs in a separate background thread.
+    Never blocks the website.
     """
-    global cache
-    now = time.time()
-    
-    if cache['data'] and (now - cache['timestamp']) < CACHE_TTL:
-        return cache['data']
-
     targets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PEPE", "SPX", "SPACE", "ZEC", "LINEA"]
     
-    results = []
-    active_exchange = "OFFLINE"
-    scan_time = 0
+    while True:
+        start_time = time.time()
+        results = []
+        active_ex = "OFFLINE"
+        
+        for sym in targets:
+            try:
+                dfs, ex_name = fetch_data_failover(sym)
+                if dfs:
+                    active_ex = ex_name
+                    master = engine.generate_master_signal(sym + "/USDT", dfs['3m'], dfs['5m'], dfs['15m'])
+                    
+                    if master:
+                        d = master['data_15m']
+                        # Only store if Valid or Wait
+                        if d['validity'] in ['ACTIVE', 'WAIT']:
+                            results.append({
+                                "symbol": sym,
+                                "direction": d['expansion_dir'],
+                                "sqz_type": d['sqz_type'],
+                                "validity": d['validity'],
+                                "crossover": d['crossover'],
+                                "expansion": d['expansion_type'],
+                                "elephant": d['elephant_detected'],
+                                "tail": d['tail_detected'],
+                                "sma_respect": d['sma_status'],
+                                "whipsaw": "YES" if "WHIPSAW" in d['sma_status'] else "NO",
+                                "timeframe": "15m",
+                                "exchange": active_ex
+                            })
+            except Exception as e:
+                pass
 
-    start = time.time()
-    
-    for sym in targets:
-        try:
-            dfs, ex_name = fetch_data_failover(sym)
-            if dfs:
-                active_exchange = ex_name
-                
-                # Run Engine
-                master = engine.generate_master_signal(sym + "/USDT", dfs['3m'], dfs['5m'], dfs['15m'])
-                
-                if master:
-                    d = master['data_15m']
-                    results.append({
-                        "symbol": sym,
-                        "direction": d['expansion_dir'],
-                        "sqz_type": d['sqz_type'],
-                        "validity": d['validity'],
-                        "crossover": d['crossover'],
-                        "expansion": d['expansion_type'],
-                        "elephant": d['elephant_detected'],
-                        "tail": d['tail_detected'],
-                        "sma_respect": d['sma_status'],
-                        "whipsaw": "YES" if "WHIPSAW" in d['sma_status'] else "NO",
-                        "timeframe": "15m",
-                        "age": "0s",
-                        "exchange": active_exchange
-                    })
-        except Exception as e:
-            print(f"Error scanning {sym}: {e}")
+        # Update Global Cache
+        scan_duration = round(time.time() - start_time, 3)
+        current_data['signals'] = results
+        current_data['exchange'] = active_ex
+        current_data['scan_time'] = f"{scan_duration}s"
+        current_data['timestamp'] = pd.Timestamp.now().strftime("%H:%M:%S")
+        current_data['status'] = "ONLINE"
+        
+        time.sleep(6)
 
-    scan_time = round(time.time() - start, 3)
-    
-    output = {
-        "signals": results,
-        "exchange": active_exchange,
-        "scan_time": f"{scan_time}s",
-        "timestamp": pd.Timestamp.now().strftime("%H:%M:%S")
-    }
-    
-    cache['data'] = output
-    cache['timestamp'] = now
-    return output
+# --- START BACKGROUND THREAD ---
+t = threading.Thread(target=scanner_loop, daemon=True)
+t.start()
 
-# DASHBOARD HTML (JEREMIAH STYLE)
+# --- HTML DASHBOARD ---
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -143,48 +127,35 @@ DASHBOARD_HTML = """
         .bull { color: #00ff00; }
         .bear { color: #ff0000; }
         
-        .blink { animation: blinker 1s linear infinite; }
-        @keyframes blinker { 50% { opacity: 0; } }
-        
         .empty-msg { text-align: center; color: #444; margin-top: 20px; font-size: 0.8rem; }
     </style>
 </head>
 <body>
     <div class="header">
         <div class="title">JEREMIAH // EXECUTION</div>
-        <div class="stats" id="status">INITIALIZING...</div>
+        <div class="stats" id="status">CONNECTING...</div>
     </div>
 
-    <div id="grid">
-        <!-- Table populated via JS -->
-    </div>
+    <div id="grid"></div>
 
     <script>
         async function update() {
             try {
-                // Added 10 second timeout to prevent infinite "INITIALIZING"
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 10000);
-                
-                const res = await fetch('/api/data', { signal: controller.signal });
-                clearTimeout(timeoutId);
-                
+                const res = await fetch('/api/data');
                 const json = await res.json();
                 render(json);
             } catch (e) {
-                document.getElementById('status').innerHTML = `CONNECTION ERROR OR TIMEOUT`;
+                document.getElementById('status').innerText = "CONNECTION ERROR";
             }
         }
 
         function render(data) {
             document.getElementById('status').innerHTML = 
-                `EXCHANGE: ${data.exchange} | LATENCY: ${data.scan_time} | REFRESH: 5s`;
+                `EXCHANGE: ${data.exchange} | LATENCY: ${data.scan_time} | ${data.timestamp}`;
 
             const grid = document.getElementById('grid');
             
-            const activeSignals = data.signals.filter(s => s.validity !== 'INVALID');
-
-            if (activeSignals.length === 0) {
+            if (data.signals.length === 0) {
                 grid.innerHTML = `<div class="empty-msg">NO ACTIVE STRUCTURES DETECTED</div>`;
                 return;
             }
@@ -193,7 +164,7 @@ DASHBOARD_HTML = """
                 <th>SYM</th><th>DIR</th><th>SQZ TYPE</th><th>VALID</th><th>CROSS</th><th>EXP</th><th>RESPECT</th>
             </tr></thead><tbody>`;
 
-            activeSignals.forEach(s => {
+            data.signals.forEach(s => {
                 let validClass = s.validity.toLowerCase();
                 let dirClass = s.direction.toLowerCase();
                 
@@ -227,7 +198,7 @@ def home():
 
 @app.route("/api/data")
 def api():
-    return jsonify(run_engine())
+    return jsonify(current_data)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, threaded=True)
