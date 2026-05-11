@@ -2,25 +2,35 @@ import os
 import time
 import ccxt
 import threading
+import socket
 from flask import Flask, jsonify
 from engine import JeremiahEngine
 
 app = Flask(__name__)
 engine = JeremiahEngine()
 
-# --- EXCHANGE CONFIG (OPTIMIZED FOR SPEED) ---
-# Only OKX and MEXC with aggressive 1.5s timeouts
+# --- CRITICAL NETWORK FIX ---
+socket.setdefaulttimeout(5)
+
+# --- SHARED STATE ---
+current_data = {
+    "signals": [],
+    "exchange": "STARTING...",
+    "scan_time": "0s",
+    "timestamp": "00:00:00"
+}
+
+# --- CALL LOG (HISTORY) ---
+call_log = []
+
+# --- EXCHANGE CONFIG ---
 EXCHANGE_CONFIG = [
-    ccxt.okx({'options': {'defaultType': 'spot'}, 'timeout': 1500}),
-    ccxt.mexc({'options': {'defaultType': 'spot'}, 'timeout': 1500})
+    ccxt.binance({'options': {'defaultType': 'spot'}}),
+    ccxt.okx({'options': {'defaultType': 'spot'}})
 ]
 
 def fetch_data_failover(symbol):
-    """
-    Tries OKX then MEXC. Skips instantly if missing.
-    """
     pair = symbol + '/USDT'
-    
     for ex in EXCHANGE_CONFIG:
         try:
             if not ex.markets: ex.load_markets()
@@ -37,53 +47,69 @@ def fetch_data_failover(symbol):
             continue
     return None, "FAIL"
 
-def run_engine():
+def scanner_loop():
     """
-    Core scanning loop. Runs live on request.
+    Runs continuously in the background (Same process as Web Server now).
     """
     targets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PEPE", "SPX", "SPACE", "ZEC", "LINEA"]
     
-    results = []
-    active_exchange = "OFFLINE"
-    scan_time = 0
-    start_time = time.time()
-    
-    for sym in targets:
-        try:
-            dfs, ex_name = fetch_data_failover(sym)
-            if dfs:
-                active_exchange = ex_name
-                master = engine.generate_master_signal(sym + "/USDT", dfs['3m'], dfs['5m'], dfs['15m'])
-                
-                if master:
-                    d = master['data_15m']
-                    # Only show Valid or Wait
-                    if d['validity'] in ['ACTIVE', 'WAIT']:
-                        results.append({
-                            "symbol": sym,
-                            "direction": d['expansion_dir'],
-                            "sqz_type": d['sqz_type'],
-                            "validity": d['validity'],
-                            "crossover": d['crossover'],
-                            "expansion": d['expansion_type'],
-                            "elephant": d['elephant_detected'],
-                            "tail": d['tail_detected'],
-                            "sma_respect": d['sma_status'],
-                            "whipsaw": "YES" if "WHIPSAW" in d['sma_status'] else "NO",
-                            "timeframe": "15m",
-                            "exchange": active_exchange
-                        })
-        except Exception as e:
-            pass
+    while True:
+        start_time = time.time()
+        results = []
+        active_ex = "OFFLINE"
+        scan_ok = False
+        
+        for sym in targets:
+            try:
+                dfs, ex_name = fetch_data_failover(sym)
+                if dfs:
+                    active_ex = ex_name
+                    master = engine.generate_master_signal(sym + "/USDT", dfs['3m'], dfs['5m'], dfs['15m'])
+                    if master:
+                        d = master['data_15m']
+                        if d['validity'] in ['ACTIVE', 'WAIT']:
+                            results.append({
+                                "symbol": sym,
+                                "direction": d['expansion_dir'],
+                                "sqz_type": d['sqz_type'],
+                                "validity": d['validity'],
+                                "crossover": d['crossover'],
+                                "expansion": d['expansion_type'],
+                                "elephant": d['elephant_detected'],
+                                "tail": d['tail_detected'],
+                                "sma_respect": d['sma_status'],
+                                "timeframe": "15m",
+                                "exchange": active_ex
+                            })
+            except Exception as e:
+                pass
 
-    scan_time = round(time.time() - start_time, 2)
-    
-    return {
-        "signals": results,
-        "exchange": active_exchange,
-        "scan_time": f"{scan_time}s",
-        "timestamp": pd.Timestamp.now().strftime("%H:%M:%S")
-    }
+        scan_time = round(time.time() - start_time, 2)
+        
+        # Update Cache
+        current_data['signals'] = results
+        current_data['exchange'] = active_ex
+        current_data['scan_time'] = f"{scan_time}s"
+        current_data['timestamp'] = pd.Timestamp.now().strftime("%H:%M:%S")
+        
+        # Update Call Log
+        log_entry = {
+            "time": current_data['timestamp'],
+            "count": len(results),
+            "active_coin": results[0]['symbol'] if results else "-",
+            "status": "SUCCESS" if active_ex != "OFFLINE" else "FAIL",
+            "latency": f"{scan_time}s"
+        }
+        call_log.insert(0, log_entry)
+        if len(call_log) > 20: call_log.pop() # Keep last 20 logs
+        
+        time.sleep(6)
+
+# --- START THREAD ---
+# With --workers 1 in Procfile, this thread is guaranteed to run.
+t = threading.Thread(target=scanner_loop, daemon=True)
+t.start()
+print("Scanner Thread Started on Single Worker")
 
 # --- HTML DASHBOARD ---
 DASHBOARD_HTML = """
@@ -94,76 +120,106 @@ DASHBOARD_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JEREMIAH EXECUTION ENGINE</title>
     <style>
-        body { background-color: #000; color: #00ff00; font-family: 'Courier New', monospace; padding: 10px; }
-        .header { border-bottom: 2px solid #00ff00; padding-bottom: 10px; margin-bottom: 15px; text-align: center; }
+        body { background-color: #000; color: #00ff00; font-family: 'Courier New', monospace; padding: 10px; font-size: 12px; }
+        .header { border-bottom: 2px solid #00ff00; padding-bottom: 10px; margin-bottom: 10px; text-align: center; }
         .title { font-size: 1.2rem; font-weight: bold; letter-spacing: 2px; }
         .stats { font-size: 0.7rem; color: #888; margin-top: 5px; }
         
-        table { width: 100%; border-collapse: collapse; font-size: 0.7rem; margin-top: 10px; }
+        /* Main Table */
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.7rem; }
         th { text-align: left; border-bottom: 1px solid #333; padding: 5px; color: #00ff00; }
         td { padding: 5px; border-bottom: 1px solid #111; }
         
+        /* Log Section */
+        .log-section { margin-top: 20px; border-top: 1px dashed #333; padding-top: 10px; }
+        .log-title { color: #666; font-size: 0.6rem; margin-bottom: 5px; }
+        .log-table { width: 100%; font-size: 0.6rem; color: #666; }
+        
         .active { color: #00ff00; font-weight: bold; }
         .wait { color: #ffaa00; }
-        .invalid { color: #ff0000; }
         .bull { color: #00ff00; }
         .bear { color: #ff0000; }
-        
-        .blink { animation: blinker 1s linear infinite; }
-        @keyframes blinker { 50% { opacity: 0; } }
-        
-        .empty-msg { text-align: center; color: #444; margin-top: 20px; font-size: 0.8rem; }
+        .log-success { color: #444; }
+        .log-fail { color: #aa0000; }
     </style>
 </head>
 <body>
     <div class="header">
         <div class="title">JEREMIAH // EXECUTION</div>
-        <div class="stats" id="status">SCANNING MARKET...</div>
+        <div class="stats" id="status">INITIALIZING...</div>
     </div>
 
     <div id="grid"></div>
 
+    <div class="log-section">
+        <div class="log-title">SCANNER CALL LOG (LAST 20)</div>
+        <table class="log-table">
+            <thead>
+                <tr>
+                    <th>TIME</th><th>STATUS</th><th>SIGS</th><th>TOP COIN</th><th>LATENCY</th>
+                </tr>
+            </thead>
+            <tbody id="log-body">
+                <!-- Logs go here -->
+            </tbody>
+        </table>
+    </div>
+
     <script>
         async function update() {
-            const res = await fetch('/api/data');
-            const json = await res.json();
-            render(json);
+            try {
+                const res = await fetch('/api/data');
+                const json = await res.json();
+                render(json);
+            } catch (e) {
+                document.getElementById('status').innerText = "SERVER ERROR";
+            }
         }
 
         function render(data) {
+            // Update Header
             document.getElementById('status').innerHTML = 
                 `EXCHANGE: ${data.exchange} | LATENCY: ${data.scan_time} | ${data.timestamp}`;
 
+            // Update Main Table
             const grid = document.getElementById('grid');
-            
             if (data.signals.length === 0) {
-                grid.innerHTML = `<div class="empty-msg">NO ACTIVE STRUCTURES DETECTED</div>`;
-                return;
+                grid.innerHTML = `<div style="text-align:center; color:#444; padding:20px;">NO ACTIVE STRUCTURES DETECTED</div>`;
+            } else {
+                let html = `<table><thead><tr>
+                    <th>SYM</th><th>DIR</th><th>SQZ TYPE</th><th>VALID</th><th>CROSS</th><th>EXP</th><th>RESPECT</th>
+                </tr></thead><tbody>`;
+                data.signals.forEach(s => {
+                    let vc = s.validity.toLowerCase();
+                    let dc = s.direction.toLowerCase();
+                    html += `<tr ${s.validity === 'ACTIVE' ? 'style="background:#111"' : ''}>
+                        <td>${s.symbol}</td>
+                        <td class="${dc}">${s.direction}</td>
+                        <td>${s.sqz_type}</td>
+                        <td class="${vc}">${s.validity}</td>
+                        <td>${s.crossover}</td>
+                        <td>${s.expansion}</td>
+                        <td>${s.sma_respect}</td>
+                    </tr>`;
+                });
+                html += `</tbody></table>`;
+                grid.innerHTML = html;
             }
 
-            let html = `<table><thead><tr>
-                <th>SYM</th><th>DIR</th><th>SQZ TYPE</th><th>VALID</th><th>CROSS</th><th>EXP</th><th>RESPECT</th>
-            </tr></thead><tbody>`;
-
-            data.signals.forEach(s => {
-                let validClass = s.validity.toLowerCase();
-                let dirClass = s.direction.toLowerCase();
-                
-                if(s.validity === 'ACTIVE') html += `<tr style="background:#111;">`;
-                else html += `<tr>`;
-
-                html += `
-                    <td>${s.symbol}</td>
-                    <td class="${dirClass}">${s.direction}</td>
-                    <td>${s.sqz_type}</td>
-                    <td class="${validClass}">${s.validity}</td>
-                    <td>${s.crossover}</td>
-                    <td>${s.expansion} <br> <small>El:${s.elephant} / Tl:${s.tail}</small></td>
-                    <td>${s.sma_respect}</td>
+            // Update Logs
+            const logBody = document.getElementById('log-body');
+            let logHtml = "";
+            data.log.forEach(l => {
+                let statusClass = l.status === 'SUCCESS' ? 'log-success' : 'log-fail';
+                logHtml += `<tr>
+                    <td>${l.time}</td>
+                    <td class="${statusClass}">${l.status}</td>
+                    <td>${l.count}</td>
+                    <td>${l.active_coin}</td>
+                    <td>${l.latency}</td>
                 </tr>`;
             });
-            html += `</tbody></table>`;
-            grid.innerHTML = html;
+            logBody.innerHTML = logHtml;
         }
 
         setInterval(update, 5000);
@@ -179,7 +235,14 @@ def home():
 
 @app.route("/api/data")
 def api():
-    return jsonify(run_engine())
+    # Return combined data
+    return jsonify({
+        "signals": current_data['signals'],
+        "exchange": current_data['exchange'],
+        "scan_time": current_data['scan_time'],
+        "timestamp": current_data['timestamp'],
+        "log": call_log
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, threaded=True)
