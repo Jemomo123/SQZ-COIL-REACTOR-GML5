@@ -8,27 +8,16 @@ from engine import JeremiahEngine
 app = Flask(__name__)
 engine = JeremiahEngine()
 
-# --- SHARED CACHE ---
-current_data = {
-    "signals": [],
-    "exchange": "STARTING...",
-    "scan_time": "0s",
-    "timestamp": "00:00:00",
-    "status": "INITIALIZING"
-}
-
-# --- EXCHANGE CONFIG (UPDATED) ---
-# Removed Bybit per request. Kept OKX and MEXC for best free data.
+# --- EXCHANGE CONFIG (OPTIMIZED FOR SPEED) ---
+# Only OKX and MEXC with aggressive 1.5s timeouts
 EXCHANGE_CONFIG = [
-    ccxt.binance({'options': {'defaultType': 'spot'}, 'timeout': 3000}),
-    ccxt.gate({'options': {'defaultType': 'spot'}, 'timeout': 3000}),
-    ccxt.okx({'options': {'defaultType': 'spot'}, 'timeout': 3000}),
-    ccxt.mexc({'options': {'defaultType': 'spot'}, 'timeout': 3000})
+    ccxt.okx({'options': {'defaultType': 'spot'}, 'timeout': 1500}),
+    ccxt.mexc({'options': {'defaultType': 'spot'}, 'timeout': 1500})
 ]
 
 def fetch_data_failover(symbol):
     """
-    Tries exchanges. Returns data or None.
+    Tries OKX then MEXC. Skips instantly if missing.
     """
     pair = symbol + '/USDT'
     
@@ -38,7 +27,6 @@ def fetch_data_failover(symbol):
             if pair not in ex.markets: continue 
 
             dfs = {}
-            # Fetch required timeframes
             for tf in ['3m', '5m', '15m']:
                 bars = ex.fetch_ohlcv(pair, tf, limit=200)
                 df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -49,59 +37,53 @@ def fetch_data_failover(symbol):
             continue
     return None, "FAIL"
 
-def scanner_loop():
+def run_engine():
     """
-    Runs in a separate background thread.
-    Never blocks the website.
+    Core scanning loop. Runs live on request.
     """
     targets = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "PEPE", "SPX", "SPACE", "ZEC", "LINEA"]
     
-    while True:
-        start_time = time.time()
-        results = []
-        active_ex = "OFFLINE"
-        
-        for sym in targets:
-            try:
-                dfs, ex_name = fetch_data_failover(sym)
-                if dfs:
-                    active_ex = ex_name
-                    master = engine.generate_master_signal(sym + "/USDT", dfs['3m'], dfs['5m'], dfs['15m'])
-                    
-                    if master:
-                        d = master['data_15m']
-                        # Only store if Valid or Wait
-                        if d['validity'] in ['ACTIVE', 'WAIT']:
-                            results.append({
-                                "symbol": sym,
-                                "direction": d['expansion_dir'],
-                                "sqz_type": d['sqz_type'],
-                                "validity": d['validity'],
-                                "crossover": d['crossover'],
-                                "expansion": d['expansion_type'],
-                                "elephant": d['elephant_detected'],
-                                "tail": d['tail_detected'],
-                                "sma_respect": d['sma_status'],
-                                "whipsaw": "YES" if "WHIPSAW" in d['sma_status'] else "NO",
-                                "timeframe": "15m",
-                                "exchange": active_ex
-                            })
-            except Exception as e:
-                pass
+    results = []
+    active_exchange = "OFFLINE"
+    scan_time = 0
+    start_time = time.time()
+    
+    for sym in targets:
+        try:
+            dfs, ex_name = fetch_data_failover(sym)
+            if dfs:
+                active_exchange = ex_name
+                master = engine.generate_master_signal(sym + "/USDT", dfs['3m'], dfs['5m'], dfs['15m'])
+                
+                if master:
+                    d = master['data_15m']
+                    # Only show Valid or Wait
+                    if d['validity'] in ['ACTIVE', 'WAIT']:
+                        results.append({
+                            "symbol": sym,
+                            "direction": d['expansion_dir'],
+                            "sqz_type": d['sqz_type'],
+                            "validity": d['validity'],
+                            "crossover": d['crossover'],
+                            "expansion": d['expansion_type'],
+                            "elephant": d['elephant_detected'],
+                            "tail": d['tail_detected'],
+                            "sma_respect": d['sma_status'],
+                            "whipsaw": "YES" if "WHIPSAW" in d['sma_status'] else "NO",
+                            "timeframe": "15m",
+                            "exchange": active_exchange
+                        })
+        except Exception as e:
+            pass
 
-        # Update Global Cache
-        scan_duration = round(time.time() - start_time, 3)
-        current_data['signals'] = results
-        current_data['exchange'] = active_ex
-        current_data['scan_time'] = f"{scan_duration}s"
-        current_data['timestamp'] = pd.Timestamp.now().strftime("%H:%M:%S")
-        current_data['status'] = "ONLINE"
-        
-        time.sleep(6)
-
-# --- START BACKGROUND THREAD ---
-t = threading.Thread(target=scanner_loop, daemon=True)
-t.start()
+    scan_time = round(time.time() - start_time, 2)
+    
+    return {
+        "signals": results,
+        "exchange": active_exchange,
+        "scan_time": f"{scan_time}s",
+        "timestamp": pd.Timestamp.now().strftime("%H:%M:%S")
+    }
 
 # --- HTML DASHBOARD ---
 DASHBOARD_HTML = """
@@ -127,26 +109,25 @@ DASHBOARD_HTML = """
         .bull { color: #00ff00; }
         .bear { color: #ff0000; }
         
+        .blink { animation: blinker 1s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0; } }
+        
         .empty-msg { text-align: center; color: #444; margin-top: 20px; font-size: 0.8rem; }
     </style>
 </head>
 <body>
     <div class="header">
         <div class="title">JEREMIAH // EXECUTION</div>
-        <div class="stats" id="status">CONNECTING...</div>
+        <div class="stats" id="status">SCANNING MARKET...</div>
     </div>
 
     <div id="grid"></div>
 
     <script>
         async function update() {
-            try {
-                const res = await fetch('/api/data');
-                const json = await res.json();
-                render(json);
-            } catch (e) {
-                document.getElementById('status').innerText = "CONNECTION ERROR";
-            }
+            const res = await fetch('/api/data');
+            const json = await res.json();
+            render(json);
         }
 
         function render(data) {
@@ -198,7 +179,7 @@ def home():
 
 @app.route("/api/data")
 def api():
-    return jsonify(current_data)
+    return jsonify(run_engine())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, threaded=True)
