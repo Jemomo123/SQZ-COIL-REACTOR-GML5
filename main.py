@@ -24,10 +24,11 @@ current_data = {
 # --- CALL LOG (HISTORY) ---
 call_log = []
 
-# --- EXCHANGE CONFIG ---
+# --- EXCHANGE CONFIG (UPDATED TO PERP) ---
+# Changed 'spot' to 'swap' (Perpetual) to match your chart
 EXCHANGE_CONFIG = [
-    ccxt.binance({'options': {'defaultType': 'spot'}}),
-    ccxt.okx({'options': {'defaultType': 'spot'}})
+    ccxt.binance({'options': {'defaultType': 'future'}}), # Binance Futures
+    ccxt.okx({'options': {'defaultType': 'swap'}})      # OKX Perpetual
 ]
 
 def fetch_data_failover(symbol):
