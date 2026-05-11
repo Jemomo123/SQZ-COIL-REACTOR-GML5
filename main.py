@@ -12,26 +12,26 @@ engine = JeremiahEngine()
 CACHE_TTL = 5
 cache = {'data': None, 'timestamp': 0}
 
-EXCHANGE_LIST = [
-    ccxt.binance(),
-    ccxt.bybit(),
-    ccxt.okx(),
-    ccxt.mexc(),
-    ccxt.gate(),
-    ccxt.bingx(),
-    ccxt.weex()
+# Reduced to Top 5 Stable Exchanges to prevent hanging
+# Removed weex/bingx as they often cause socket hangs
+EXCHANGE_CONFIG = [
+    ccxt.binance({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
+    ccxt.bybit({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
+    ccxt.okx({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
+    ccxt.mexc({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
+    ccxt.gate({'options': {'defaultType': 'spot'}, 'timeout': 2000, 'enableRateLimit': True}),
 ]
 
 def fetch_data_failover(symbol):
     """
     Tries exchanges in order until one succeeds.
-    FAST FAIL: Skips exchanges if the market doesn't exist.
+    Uses aggressive timeouts (2s) to prevent hanging.
     """
     pair = symbol + '/USDT'
     
-    for ex in EXCHANGE_LIST:
+    for ex in EXCHANGE_CONFIG:
         try:
-            # Load markets only once per exchange if possible
+            # Load markets (with aggressive error handling)
             if not ex.markets:
                 try:
                     ex.load_markets()
@@ -39,22 +39,22 @@ def fetch_data_failover(symbol):
                     print(f"Market load fail {ex.name}: {e}")
                     continue
 
-            # CRITICAL FIX: Check if pair exists BEFORE fetching to prevent freeze
+            # CRITICAL: Skip immediately if pair doesn't exist
             if pair not in ex.markets:
                 continue 
 
             # Fetch required timeframes
             dfs = {}
             for tf in ['3m', '5m', '15m']:
-                # Set a small timeout to prevent hanging
-                bars = ex.fetch_ohlcv(pair, tf, limit=200, params={'timeout': 5000}) 
+                # Timeout is handled by the exchange config above (2000ms)
+                bars = ex.fetch_ohlcv(pair, tf, limit=200)
                 df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 dfs[tf] = df
             return dfs, ex.name
         except Exception as e:
-            # Log error but continue to next exchange
-            print(f"Fetch fail {ex.name} for {symbol}: {e}")
+            # Log but continue
+            print(f"Fetch fail {ex.name} for {symbol}: {type(e).__name__}")
             continue
             
     return None, "OFFLINE"
@@ -88,7 +88,6 @@ def run_engine():
                 
                 if master:
                     d = master['data_15m']
-                    # Format for Dashboard
                     results.append({
                         "symbol": sym,
                         "direction": d['expansion_dir'],
@@ -162,9 +161,19 @@ DASHBOARD_HTML = """
 
     <script>
         async function update() {
-            const res = await fetch('/api/data');
-            const json = await res.json();
-            render(json);
+            try {
+                // Added 10 second timeout to prevent infinite "INITIALIZING"
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+                
+                const res = await fetch('/api/data', { signal: controller.signal });
+                clearTimeout(timeoutId);
+                
+                const json = await res.json();
+                render(json);
+            } catch (e) {
+                document.getElementById('status').innerHTML = `CONNECTION ERROR OR TIMEOUT`;
+            }
         }
 
         function render(data) {
@@ -173,7 +182,6 @@ DASHBOARD_HTML = """
 
             const grid = document.getElementById('grid');
             
-            // Filter: Only show ACTIVE or WAIT. Hide INVALID.
             const activeSignals = data.signals.filter(s => s.validity !== 'INVALID');
 
             if (activeSignals.length === 0) {
@@ -189,7 +197,6 @@ DASHBOARD_HTML = """
                 let validClass = s.validity.toLowerCase();
                 let dirClass = s.direction.toLowerCase();
                 
-                // Highlight Active signals
                 if(s.validity === 'ACTIVE') html += `<tr style="background:#111;">`;
                 else html += `<tr>`;
 
