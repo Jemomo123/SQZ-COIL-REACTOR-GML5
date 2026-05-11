@@ -78,7 +78,7 @@ def scanner_loop():
                                 "elephant": d['elephant_detected'],
                                 "tail": d['tail_detected'],
                                 "sma_respect": d['sma_status'],
-                                "timeframe": d['timeframe'], # Passing timeframe
+                                "timeframe": d['timeframe'],
                                 "exchange": active_ex
                             })
             except Exception as e:
@@ -131,6 +131,116 @@ DASHBOARD_HTML = """
         .header { border-bottom: 2px solid #00ff00; padding-bottom: 10px; margin-bottom: 10px; text-align: center; }
         .title { font-size: 1.2rem; font-weight: bold; letter-spacing: 2px; }
         .stats { font-size: 0.7rem; color: #888; margin-top: 5px; }
-        
-        /* Main Table */
-        table { width: 100%; border-collapse: collapse; margin-top: 10px;
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.7rem; }
+        th { text-align: left; border-bottom: 1px solid #333; padding: 5px; color: #00ff00; }
+        td { padding: 5px; border-bottom: 1px solid #111; }
+        .log-section { margin-top: 20px; border-top: 1px dashed #333; padding-top: 10px; }
+        .log-title { color: #666; font-size: 0.6rem; margin-bottom: 5px; }
+        .log-table { width: 100%; font-size: 0.6rem; color: #666; }
+        .active { color: #00ff00; font-weight: bold; }
+        .wait { color: #ffaa00; }
+        .bull { color: #00ff00; }
+        .bear { color: #ff0000; }
+        .log-success { color: #444; }
+        .log-fail { color: #aa0000; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">JEREMIAH // EXECUTION</div>
+        <div class="stats" id="status">INITIALIZING...</div>
+    </div>
+
+    <div id="grid"></div>
+
+    <div class="log-section">
+        <div class="log-title">SCANNER CALL LOG (LAST 20)</div>
+        <table class="log-table">
+            <thead>
+                <tr>
+                    <th>TIME</th><th>STATUS</th><th>SIGS</th><th>TOP COIN</th><th>LATENCY</th>
+                </tr>
+            </thead>
+            <tbody id="log-body"></tbody>
+        </table>
+    </div>
+
+    <script>
+        async function update() {
+            try {
+                const res = await fetch('/api/data');
+                const json = await res.json();
+                render(json);
+            } catch (e) {
+                document.getElementById('status').innerText = "SERVER ERROR";
+            }
+        }
+
+        function render(data) {
+            document.getElementById('status').innerHTML = 
+                'EXCHANGE: ' + data.exchange + ' | LATENCY: ' + data.scan_time + ' | ' + data.timestamp;
+
+            const grid = document.getElementById('grid');
+            if (data.signals.length === 0) {
+                grid.innerHTML = '<div style="text-align:center; color:#444; padding:20px;">NO ACTIVE STRUCTURES DETECTED</div>';
+            } else {
+                let html = '<table><thead><tr><th>SYM</th><th>TF</th><th>DIR</th><th>SQZ TYPE</th><th>VALID</th><th>CROSS</th><th>EXP</th><th>RESPECT</th></tr></thead><tbody>';
+                data.signals.forEach(s => {
+                    let vc = s.validity.toLowerCase();
+                    let dc = s.direction.toLowerCase();
+                    let rowStyle = s.validity === 'ACTIVE' ? 'background:#111' : '';
+                    html += '<tr style="' + rowStyle + '">' +
+                        '<td>' + s.symbol + '</td>' +
+                        '<td>' + s.timeframe + '</td>' +
+                        '<td class="' + dc + '">' + s.direction + '</td>' +
+                        '<td>' + s.sqz_type + '</td>' +
+                        '<td class="' + vc + '">' + s.validity + '</td>' +
+                        '<td>' + s.crossover + '</td>' +
+                        '<td>' + s.expansion + '</td>' +
+                        '<td>' + s.sma_respect + '</td>' +
+                    '</tr>';
+                });
+                html += '</tbody></table>';
+                grid.innerHTML = html;
+            }
+
+            const logBody = document.getElementById('log-body');
+            let logHtml = "";
+            data.log.forEach(l => {
+                let statusClass = l.status === 'SUCCESS' ? 'log-success' : 'log-fail';
+                logHtml += '<tr>' +
+                    '<td>' + l.time + '</td>' +
+                    '<td class="' + statusClass + '">' + l.status + '</td>' +
+                    '<td>' + l.count + '</td>' +
+                    '<td>' + l.active_coin + '</td>' +
+                    '<td>' + l.latency + '</td>' +
+                '</tr>';
+            });
+            logBody.innerHTML = logHtml;
+        }
+
+        setInterval(update, 5000);
+        update();
+    </script>
+</body>
+</html>
+""" 
+
+@app.route("/")
+def home():
+    return DASHBOARD_HTML
+
+@app.route("/api/data")
+def api():
+    if t is None or not t.is_alive():
+        start_thread()
+    return jsonify({
+        "signals": current_data['signals'],
+        "exchange": current_data['exchange'],
+        "scan_time": current_data['scan_time'],
+        "timestamp": current_data['timestamp'],
+        "log": call_log
+    })
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080, threaded=True)
