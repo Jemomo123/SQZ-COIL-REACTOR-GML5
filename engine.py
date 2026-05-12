@@ -3,8 +3,8 @@ import numpy as np
 
 class JeremiahEngine:
     def __init__(self):
-        # STRICT 0.2% Threshold
-        self.SQZ_THRESHOLD = 0.002 
+        # STRICT 0.1% Threshold (Tightened from 0.2%)
+        self.SQZ_THRESHOLD = 0.001 
 
     def calculate_sma(self, data, period):
         return data.rolling(window=period).mean()
@@ -109,7 +109,7 @@ class JeremiahEngine:
     def analyze_sqz(self, row, sma20, sma100, sma200):
         """
         ALL TOGETHER (20/100) or SPECIAL ONE (20/200).
-        0.2% Threshold.
+        0.1% Threshold (0.001).
         """
         price = row['close']
         
