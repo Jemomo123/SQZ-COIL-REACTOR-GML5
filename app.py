@@ -4,10 +4,10 @@ import ccxt
 import threading
 import pandas as pd
 from flask import Flask, jsonify
-from engine import SimpleSQZEngine  # UPDATED IMPORT
+from engine import SimpleSQZEngine
 
 app = Flask(__name__)
-engine = SimpleSQZEngine() # UPDATED CLASS NAME
+engine = SimpleSQZEngine()
 
 # --- SHARED STATE ---
 current_data = {
@@ -101,7 +101,7 @@ def scanner_loop():
                                 "spread": s['spread_pct'],
                                 "near_status": near_status,
                                 "sqz_type": s['sqz_type'],
-                                "cluster_cnt": 0 # Simplified
+                                "cluster_cnt": 0 
                             })
 
                             if s['valid']:
