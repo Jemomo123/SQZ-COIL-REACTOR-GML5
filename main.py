@@ -86,7 +86,6 @@ def scanner_loop():
                         if master:
                             s = master
                             
-                            # Update Counts
                             if s['sqz_type'] != "NONE": current_sqz += 1
                             if s['expansion_status'] == "FIRED": current_exp += 1
                             
@@ -107,7 +106,7 @@ def scanner_loop():
                                 "dist_100": s['debug_dist_100'],
                                 "dist_200": s['debug_dist_200'],
                                 "spread": s['spread_pct'],
-                                "near_status": near_status, # NEW
+                                "near_status": near_status,
                                 "sqz_type": s['sqz_type'],
                                 "cluster_cnt": s['debug_cluster_count']
                             })
@@ -176,18 +175,17 @@ DASHBOARD_HTML = """
         .debug-title { color: #00ff00; font-size: 0.7rem; margin-bottom: 5px; }
         .debug-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.6rem; color: #888; }
         
-        /* Verification Table with Near-SQZ Visibility */
         .verify-section { margin-top: 20px; border-top: 1px dashed #ffaa00; padding-top: 10px; }
         .verify-title { color: #ffaa00; font-size: 0.7rem; margin-bottom: 5px; }
         .verify-table { width: 100%; font-size: 0.5rem; }
         .verify-table th { color: #ffaa00; }
         
         .status-valid { color: #00ff00; font-weight: bold; }
-        .status-near { color: #ffaa00; font-weight: bold; } /* Orange for Near-SQZ */
+        .status-near { color: #ffaa00; font-weight: bold; }
         .status-none { color: #444; }
         
         .row-valid { background-color: #112200; }
-        .row-near { background-color: #221100; } /* Slight orange tint */
+        .row-near { background-color: #221100; }
         
         .long { color: #00ff00; }
         .short { color: #ff0000; }
@@ -272,7 +270,61 @@ DASHBOARD_HTML = """
                 '<div class="debug-item">SQZ STRUCTURES: ' + data.debug.sqz_detections + '</div>' +
                 '<div class="debug-item">EXPANSIONS: ' + data.debug.exp_detections + '</div>';
 
-            // Near-SQZ Visibility Table
             const vBody = document.getElementById('verify-body');
             let vHtml = "";
-            // Sort by Spread (Lowest first) to see closest
+            const sortedV = data.verification.sort((a,b) => a.spread - b.spread);
+            
+            sortedV.forEach(s => {
+                let rowClass = "";
+                let statusText = "NONE";
+                let statusClass = "status-none";
+                
+                if (s.near_status === "VALID") {
+                    statusText = "VALID";
+                    statusClass = "status-valid";
+                    rowClass = "row-valid";
+                } else if (s.near_status === "NEAR") {
+                    statusText = "NEAR";
+                    statusClass = "status-near";
+                    rowClass = "row-near";
+                }
+
+                vHtml += '<tr class="' + rowClass + '">' +
+                    '<td>' + s.symbol + '</td>' +
+                    '<td>' + s.tf + '</td>' +
+                    '<td>' + s.price + '</td>' +
+                    '<td>' + s.spread + '%</td>' +
+                    '<td class="' + statusClass + '">' + statusText + '</td>' +
+                    '<td>' + s.sqz_type + '</td>' +
+                    '<td>' + s.cluster_cnt + '</td>' +
+                '</tr>';
+            });
+            vBody.innerHTML = vHtml;
+        }
+
+        setInterval(update, 5000);
+        update();
+    </script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def home():
+    return DASHBOARD_HTML
+
+@app.route("/api/data")
+def api():
+    if t is None or not t.is_alive():
+        start_thread()
+    return jsonify({
+        "signals": current_data['signals'],
+        "verification": current_data['verification'],
+        "exchange": current_data['exchange'],
+        "scan_time": current_data['scan_time'],
+        "timestamp": current_data['timestamp'],
+        "debug": stats
+    })
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080, threaded=True)
