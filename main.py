@@ -2,16 +2,12 @@ import os
 import time
 import ccxt
 import threading
-import socket
 import pandas as pd
 from flask import Flask, jsonify
 from engine import JeremiahEngine
 
 app = Flask(__name__)
 engine = JeremiahEngine()
-
-# --- NETWORK FIX ---
-socket.setdefaulttimeout(5)
 
 # --- SHARED STATE ---
 current_data = {
@@ -31,12 +27,13 @@ stats = {
     "near_sqz_count": 0
 }
 
-# --- EXCHANGE CONFIG (SPOT MODE) ---
+# --- EXCHANGE CONFIG (STABLE TIMEOUT) ---
+# Increased timeout to 15000ms (15s) to prevent API errors on Render
 EXCHANGE_CONFIG = [
-    ccxt.binance({'options': {'defaultType': 'spot'}}),
-    ccxt.okx({'options': {'defaultType': 'spot'}}),
-    ccxt.mexc({'options': {'defaultType': 'spot'}}),
-    ccxt.gate({'options': {'defaultType': 'spot'}})
+    ccxt.binance({'options': {'defaultType': 'spot'}, 'timeout': 15000}),
+    ccxt.okx({'options': {'defaultType': 'spot'}, 'timeout': 15000}),
+    ccxt.mexc({'options': {'defaultType': 'spot'}, 'timeout': 15000}),
+    ccxt.gate({'options': {'defaultType': 'spot'}, 'timeout': 15000})
 ]
 
 def fetch_data_failover(symbol):
