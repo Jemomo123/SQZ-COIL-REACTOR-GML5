@@ -45,8 +45,8 @@ class JeremiahEngine:
     def get_active_cluster(self, df, current_index):
         """
         DYNAMIC CLUSTER DETECTION.
-        Iterates backwards from current index to identify the ACTIVE compression structure.
-        Stops when SQZ breaks or chaos appears.
+        Iterates backwards to identify ACTIVE compression structure.
+        Returns: (cluster_df, cluster_count)
         """
         cluster_candles = []
         
@@ -60,7 +60,7 @@ class JeremiahEngine:
             sma100 = df['sma100'].iloc[i]
             sma200 = df['sma200'].iloc[i]
             
-            # Reuse SQZ Logic
+            # Reuse SQZ Logic to find range
             sqz_type, is_sqz, _ = self.analyze_sqz(row, sma20, sma100, sma200)
             
             # TERMINATION 1: SQZ Breaks
@@ -80,7 +80,6 @@ class JeremiahEngine:
                 break
             
             # TERMINATION 3: Chaotic Whipsaw (Checked on individual candle context)
-            # Quick chaos check on this specific candle
             body = abs(row['close'] - row['open'])
             rng = row['high'] - row['low']
             if rng > body * 3:
@@ -88,11 +87,12 @@ class JeremiahEngine:
 
             cluster_candles.append(row)
             
-        return cluster_candles
+        return cluster_candles, len(cluster_candles)
 
     def analyze_sqz(self, row, sma20, sma100, sma200):
         """
         0.1% Convergence Check.
+        Returns SQZ Type, Validity, and Spread %.
         """
         price = row['close']
         
@@ -106,14 +106,14 @@ class JeremiahEngine:
 
         sqz_type = "NONE"
         is_valid = False
-        dist_pct = 0.0
+        spread_pct = 0.0
 
         # ALL TOGETHER (Price, 20, 100)
         is_20_100, d_20_100 = in_range(price, sma20, sma100)
         if is_20_100:
             sqz_type = "ALL TOGETHER"
             is_valid = True
-            dist_pct = d_20_100
+            spread_pct = d_20_100
             
         # SPECIAL ONE (Price, 20, 200)
         if not is_valid:
@@ -121,9 +121,9 @@ class JeremiahEngine:
             if is_20_200:
                 sqz_type = "SPECIAL ONE"
                 is_valid = True
-                dist_pct = d_20_200
+                spread_pct = d_20_200
 
-        return sqz_type, is_valid, dist_pct
+        return sqz_type, is_valid, spread_pct
 
     def check_expansion(self, row, df, current_index):
         """
@@ -131,16 +131,16 @@ class JeremiahEngine:
         Evaluated relative ONLY to ACTIVE compression cluster.
         """
         # 1. Get Active Cluster
-        cluster_candles = self.get_active_cluster(df, current_index)
+        cluster_candles, cluster_count = self.get_active_cluster(df, current_index)
         
         if not cluster_candles:
-            return False, "NONE", "NEUTRAL", "No Cluster"
+            return False, "NONE", "NEUTRAL", "No Active Compression"
 
-        # 2. Calculate Dynamic Averages from Cluster
+        # 2. Calculate Dynamic Metrics from Cluster
         cluster_df = pd.DataFrame(cluster_candles)
         avg_body_cluster = cluster_df.apply(lambda x: abs(x['close'] - x['open']), axis=1).mean()
         
-        # Define Compression Zone (Range of cluster)
+        # Compression Zone: Range of cluster
         cluster_zone_high = cluster_df['high'].max()
         cluster_zone_low = cluster_df['low'].min()
         
@@ -148,17 +148,14 @@ class JeremiahEngine:
         body = abs(row['close'] - row['open'])
         wick_lower = row['close'] - row['low'] if row['close'] > row['open'] else row['open'] - row['low']
         wick_upper = row['high'] - row['close'] if row['close'] > row['open'] else row['high'] - row['open']
-        total_range = row['high'] - row['low']
         
-        if avg_body_cluster == 0: avg_body_cluster = body
-
         exp_type = "NONE"
         direction = "NEUTRAL"
         reason = "No Expansion"
         is_valid = False
 
         # 4. Elephant Bar Rules
-        # Rule A: Dominance relative to Cluster (Body > Avg Body of Cluster)
+        # Rule A: Dominance (Body > Average Body of Active Cluster)
         is_dominant = body > (avg_body_cluster * 1.5)
         
         # Rule B: Breakout (Outside Compression Zone)
@@ -189,7 +186,7 @@ class JeremiahEngine:
             reason = "Bearish Rejection"
             is_valid = True
 
-        return is_valid, exp_type, direction, reason
+        return is_valid, exp_type, direction, reason, cluster_count
 
     def scan_timeframe(self, df, tf_name):
         if len(df) < 200: return None
@@ -202,19 +199,21 @@ class JeremiahEngine:
         row = df.iloc[idx]
 
         # 1. SQZ Check
-        sqz_type, sqz_valid, dist_pct = self.analyze_sqz(row, df['sma20'].iloc[idx], df['sma100'].iloc[idx], df['sma200'].iloc[idx])
+        sqz_type, sqz_valid, spread_pct = self.analyze_sqz(row, df['sma20'].iloc[idx], df['sma100'].iloc[idx], df['sma200'].iloc[idx])
         
         # 2. SMA Respect
         is_respected, respect_status = self.check_sma_respect(df, idx)
         
-        # 3. Expansion (Dynamic Cluster Logic)
-        exp_valid, exp_type, exp_dir, exp_reason = self.check_expansion(row, df, idx)
+        # 3. Expansion (Dynamic Logic)
+        exp_valid, exp_type, exp_dir, exp_reason, cluster_count = self.check_expansion(row, df, idx)
         
-        # 4. Status
-        # Valid Signal = SQZ (active or recently broken) + Respect + Expansion
-        # Note: If current candle breaks SQZ, sqz_valid might be False, but it's still a valid signal if previous structure was good.
-        # We simplify: We need "Active Compression Structure" (detected inside check_expansion) + Expansion.
+        # 4. Calculate Individual Distances (DEBUG)
+        price = row['close']
+        dist_20 = abs(price - df['sma20'].iloc[idx]) / price
+        dist_100 = abs(price - df['sma100'].iloc[idx]) / price
+        dist_200 = abs(price - df['sma200'].iloc[idx]) / price
         
+        # 5. Status
         status = "INVALID"
         if not is_respected:
             status = "INVALID"
@@ -232,12 +231,19 @@ class JeremiahEngine:
         return {
             "tf": tf_name,
             "sqz_type": sqz_type,
-            "dist_pct": dist_pct,
+            "status": status,
+            "reason": reason,
+            "spread_pct": round(spread_pct*100, 3),
             "expansion_type": exp_type,
             "direction": exp_dir,
             "expansion_status": "FIRED" if exp_valid else "NO",
             "valid": exp_valid, # Signal validity
-            "reason": reason
+            
+            # DEBUG DATA
+            "debug_dist_20": round(dist_20*100, 3),
+            "debug_dist_100": round(dist_100*100, 3),
+            "debug_dist_200": round(dist_200*100, 3),
+            "debug_cluster_count": cluster_count
         }
 
     def generate_master_signal(self, symbol, data_3m, data_5m, data_15m):
